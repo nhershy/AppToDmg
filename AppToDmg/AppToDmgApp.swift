@@ -9,6 +9,12 @@ import SwiftUI
 
 @main
 struct AppToDmgApp: App {
+    init() {
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
