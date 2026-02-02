@@ -16,6 +16,10 @@ struct ContentView: View {
     @State private var isComplete = false
     @State private var isTargeted = false
 
+    // Progress tracking
+    @State private var progress: Double = 0.0
+    @State private var progressMessage: String = ""
+
     // Metadata & README options
     @State private var appMetadata: AppMetadata?
     @State private var includeSystemRequirements = false
@@ -89,6 +93,20 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .disabled(selectedAppURL == nil || isRunning)
                 .padding(.horizontal, 8)
+
+                // Progress bar (visible when running)
+                if isRunning {
+                    VStack(spacing: 4) {
+                        ProgressView(value: progress)
+                            .progressViewStyle(.linear)
+                        Text(progressMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 8)
+                    .transition(.opacity)
+                }
             }
 
             // Error message
@@ -266,6 +284,8 @@ struct ContentView: View {
         // Start creation
         isRunning = true
         errorMessage = nil
+        progress = 0.0
+        progressMessage = ""
 
         Task {
             do {
@@ -293,8 +313,9 @@ struct ContentView: View {
                     includeApplicationsLink: includeApplicationsLink,
                     systemRequirementsText: sysReqText,
                     readmeContent: readmeContent
-                ) { _ in
-                    // Silently ignore log messages for cleaner UI
+                ) { message in
+                    progressMessage = message
+                    progress = mapMessageToProgress(message)
                 }
 
                 isComplete = true
@@ -304,7 +325,39 @@ struct ContentView: View {
             }
 
             isRunning = false
+            progress = 0.0
+            progressMessage = ""
         }
+    }
+
+    private func mapMessageToProgress(_ message: String) -> Double {
+        let lowercased = message.lowercased()
+        if lowercased.contains("staging directory") {
+            return 0.05
+        } else if lowercased.contains("copying") {
+            return 0.15
+        } else if lowercased.contains("applications shortcut") {
+            return 0.25
+        } else if lowercased.contains("system requirements") {
+            return 0.30
+        } else if lowercased.contains("readme") {
+            return 0.35
+        } else if lowercased.contains("read-write dmg") {
+            return 0.45
+        } else if lowercased.contains("mounting") {
+            return 0.55
+        } else if lowercased.contains("background image") {
+            return 0.65
+        } else if lowercased.contains("configuring") {
+            return 0.75
+        } else if lowercased.contains("finalizing") {
+            return 0.85
+        } else if lowercased.contains("compressing") {
+            return 0.90
+        } else if lowercased.contains("successfully") {
+            return 1.0
+        }
+        return progress // Keep current progress for unknown messages
     }
 }
 
