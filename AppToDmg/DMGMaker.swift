@@ -15,6 +15,7 @@ enum DMGError: LocalizedError {
     case hdiutilFailed(exitCode: Int32, output: String)
     case stylingFailed(String)
     case backgroundGenerationFailed
+    case fileWriteFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -30,8 +31,15 @@ enum DMGError: LocalizedError {
             return "DMG styling failed: \(reason)"
         case .backgroundGenerationFailed:
             return "Failed to generate background image."
+        case .fileWriteFailed(let reason):
+            return "Could not write file: \(reason)"
         }
     }
+}
+
+enum ReadmeContent {
+    case file(URL)
+    case text(String)
 }
 
 actor DMGMaker {
@@ -50,6 +58,8 @@ actor DMGMaker {
         outputURL: URL,
         volumeName: String,
         includeApplicationsLink: Bool,
+        systemRequirementsText: String? = nil,
+        readmeContent: ReadmeContent? = nil,
         outputHandler: @escaping @MainActor (String) -> Void
     ) async throws {
         // Validate input is an app bundle
@@ -108,6 +118,36 @@ actor DMGMaker {
                 )
             } catch {
                 throw DMGError.symlinkFailed(error.localizedDescription)
+            }
+        }
+
+        // Write System Requirements.txt if provided
+        if let sysReqText = systemRequirementsText {
+            let sysReqURL = stagingDir.appendingPathComponent("System Requirements.txt")
+            await outputHandler("Adding System Requirements.txt...")
+
+            do {
+                try sysReqText.write(to: sysReqURL, atomically: true, encoding: .utf8)
+            } catch {
+                throw DMGError.fileWriteFailed("System Requirements.txt: \(error.localizedDescription)")
+            }
+        }
+
+        // Write README.txt if provided
+        if let readme = readmeContent {
+            let readmeURL = stagingDir.appendingPathComponent("README.txt")
+            await outputHandler("Adding README.txt...")
+
+            do {
+                switch readme {
+                case .file(let sourceURL):
+                    let content = try String(contentsOf: sourceURL, encoding: .utf8)
+                    try content.write(to: readmeURL, atomically: true, encoding: .utf8)
+                case .text(let text):
+                    try text.write(to: readmeURL, atomically: true, encoding: .utf8)
+                }
+            } catch {
+                throw DMGError.fileWriteFailed("README.txt: \(error.localizedDescription)")
             }
         }
 

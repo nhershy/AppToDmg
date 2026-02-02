@@ -16,6 +16,12 @@ struct ContentView: View {
     @State private var isComplete = false
     @State private var isTargeted = false
 
+    // Metadata & README options
+    @State private var appMetadata: AppMetadata?
+    @State private var includeSystemRequirements = false
+    @State private var includeReadme = false
+    @State private var readmeOption: ReadmeOption = .none
+
     private let dmgMaker = DMGMaker()
 
     var body: some View {
@@ -25,14 +31,36 @@ struct ContentView: View {
                 .animation(.easeInOut(duration: 0.2), value: selectedAppURL != nil)
                 .animation(.easeInOut(duration: 0.2), value: isTargeted)
 
-            // Options toggle (subtle styling)
-            if !isComplete {
-                Toggle("Include Applications folder shortcut", isOn: $includeApplicationsLink)
-                    .toggleStyle(.switch)
-                    .disabled(isRunning)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            // Metadata display (when app is selected)
+            if let metadata = appMetadata, !isComplete {
+                MetadataDisplayView(metadata: metadata)
                     .padding(.horizontal, 8)
+            }
+
+            // Options section
+            if !isComplete {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("Include Applications folder shortcut", isOn: $includeApplicationsLink)
+                        .toggleStyle(.switch)
+                        .disabled(isRunning)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    if appMetadata != nil {
+                        Toggle("Include System Requirements.txt", isOn: $includeSystemRequirements)
+                            .toggleStyle(.switch)
+                            .disabled(isRunning)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    ReadmeOptionsView(
+                        includeReadme: $includeReadme,
+                        readmeOption: $readmeOption,
+                        disabled: isRunning
+                    )
+                }
+                .padding(.horizontal, 8)
             }
 
             // Create DMG button or success state
@@ -165,6 +193,18 @@ struct ContentView: View {
         if panel.runModal() == .OK {
             selectedAppURL = panel.url
             clearStatus()
+            loadMetadata(for: panel.url)
+        }
+    }
+
+    private func loadMetadata(for url: URL?) {
+        guard let url = url else {
+            appMetadata = nil
+            return
+        }
+
+        Task {
+            appMetadata = await MetadataExtractor.extractMetadata(from: url)
         }
     }
 
@@ -178,6 +218,7 @@ struct ContentView: View {
                 if url.pathExtension.lowercased() == "app" {
                     selectedAppURL = url
                     clearStatus()
+                    loadMetadata(for: url)
                 }
             }
         }
@@ -192,8 +233,12 @@ struct ContentView: View {
 
     private func resetForNewDMG() {
         selectedAppURL = nil
+        appMetadata = nil
         errorMessage = nil
         isComplete = false
+        includeSystemRequirements = false
+        includeReadme = false
+        readmeOption = .none
     }
 
     private func createDMG() {
@@ -217,11 +262,30 @@ struct ContentView: View {
 
         Task {
             do {
+                // Prepare system requirements text if enabled
+                let sysReqText: String? = if includeSystemRequirements, let metadata = appMetadata {
+                    metadata.generateSystemRequirementsText()
+                } else {
+                    nil
+                }
+
+                // Prepare readme content
+                let readmeContent: ReadmeContent? = switch readmeOption {
+                case .none:
+                    nil
+                case .file(let url):
+                    .file(url)
+                case .text(let text):
+                    text.isEmpty ? nil : .text(text)
+                }
+
                 try await dmgMaker.createDMG(
                     appURL: appURL,
                     outputURL: outputURL,
                     volumeName: appName,
-                    includeApplicationsLink: includeApplicationsLink
+                    includeApplicationsLink: includeApplicationsLink,
+                    systemRequirementsText: sysReqText,
+                    readmeContent: readmeContent
                 ) { _ in
                     // Silently ignore log messages for cleaner UI
                 }
