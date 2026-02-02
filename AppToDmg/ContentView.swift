@@ -39,12 +39,13 @@ struct ContentView: View {
 
             // Options section
             if !isComplete {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(spacing: 12) {
                     Toggle("Include Applications folder shortcut", isOn: $includeApplicationsLink)
                         .toggleStyle(.switch)
                         .disabled(isRunning)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                     if appMetadata != nil {
                         Toggle("Include System Requirements.txt", isOn: $includeSystemRequirements)
@@ -52,6 +53,7 @@ struct ContentView: View {
                             .disabled(isRunning)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
                     ReadmeOptionsView(
@@ -59,6 +61,7 @@ struct ContentView: View {
                         readmeOption: $readmeOption,
                         disabled: isRunning
                     )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.horizontal, 8)
             }
@@ -75,13 +78,15 @@ struct ContentView: View {
                                 .controlSize(.small)
                         }
                         Text(isRunning ? "Creating DMG..." : "Create DMG")
-                            .font(.headline)
+                            .fontWeight(.medium)
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 44)
+                    .frame(height: 40)
+                    .background(selectedAppURL == nil || isRunning ? Color.accentColor.opacity(0.5) : Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(.plain)
                 .disabled(selectedAppURL == nil || isRunning)
                 .padding(.horizontal, 8)
             }
@@ -95,9 +100,11 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(24)
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .padding(.bottom, 12)
         .animation(.easeInOut(duration: 0.25), value: isComplete)
         .animation(.easeInOut(duration: 0.2), value: errorMessage != nil)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in

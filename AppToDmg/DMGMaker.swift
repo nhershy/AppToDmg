@@ -46,12 +46,21 @@ actor DMGMaker {
 
     // DMG window and icon layout constants
     private let windowWidth: CGFloat = 540
-    private let windowHeight: CGFloat = 380
     private let iconSize: Int = 128
+
+    // Layout without extra files
+    private let windowHeightStandard: CGFloat = 380
+    private let mainIconYStandard: Int = 190
+
+    // Layout with extra files
+    private let windowHeightExpanded: CGFloat = 440
+    private let mainIconYExpanded: Int = 150
+    private let extraFileY: Int = 340
+
+    // Horizontal positions (same for both layouts)
     private let appIconX: Int = 130
-    private let appIconY: Int = 190
     private let applicationsIconX: Int = 410
-    private let applicationsIconY: Int = 190
+    private let centerX: Int = 270
 
     func createDMG(
         appURL: URL,
@@ -156,6 +165,15 @@ actor DMGMaker {
             try? fileManager.removeItem(at: outputURL)
         }
 
+        // Determine which extra files are present
+        var extraFiles: [String] = []
+        if readmeContent != nil {
+            extraFiles.append("README.txt")
+        }
+        if systemRequirementsText != nil {
+            extraFiles.append("System Requirements.txt")
+        }
+
         // Create DMG - use styled approach if Applications link is included
         if includeApplicationsLink {
             try await createStyledDMG(
@@ -163,6 +181,7 @@ actor DMGMaker {
                 outputURL: outputURL,
                 volumeName: volumeName,
                 appName: appName,
+                extraFiles: extraFiles,
                 outputHandler: outputHandler
             )
         } else {
@@ -193,8 +212,12 @@ actor DMGMaker {
         outputURL: URL,
         volumeName: String,
         appName: String,
+        extraFiles: [String],
         outputHandler: @escaping @MainActor (String) -> Void
     ) async throws {
+        let hasExtraFiles = !extraFiles.isEmpty
+        let windowHeight = hasExtraFiles ? windowHeightExpanded : windowHeightStandard
+        let mainIconY = hasExtraFiles ? mainIconYExpanded : mainIconYStandard
         let fileManager = FileManager.default
         let tempDMGURL = fileManager.temporaryDirectory
             .appendingPathComponent("AppToDmg-temp-\(UUID().uuidString).dmg")
@@ -245,7 +268,10 @@ actor DMGMaker {
         // Step 3: Generate and copy background image
         await outputHandler("Generating background image...")
 
-        guard let backgroundURL = generateBackgroundImage() else {
+        guard let backgroundURL = generateBackgroundImage(
+            windowHeight: windowHeight,
+            mainIconY: mainIconY
+        ) else {
             throw DMGError.backgroundGenerationFailed
         }
 
@@ -265,7 +291,13 @@ actor DMGMaker {
         // Step 4: Run AppleScript to configure Finder view
         await outputHandler("Configuring DMG appearance...")
 
-        try await configureFinderView(volumeName: volumeName, appName: appName)
+        try await configureFinderView(
+            volumeName: volumeName,
+            appName: appName,
+            windowHeight: windowHeight,
+            mainIconY: mainIconY,
+            extraFiles: extraFiles
+        )
 
         // Small delay to let Finder write .DS_Store
         try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -299,7 +331,7 @@ actor DMGMaker {
 
     // MARK: - Background Image Generation
 
-    private func generateBackgroundImage() -> URL? {
+    private func generateBackgroundImage(windowHeight: CGFloat, mainIconY: Int) -> URL? {
         let width = Int(windowWidth)
         let height = Int(windowHeight)
 
@@ -320,7 +352,7 @@ actor DMGMaker {
         // Icons are positioned at their center points
         let arrowStartX = CGFloat(appIconX + iconSize / 2 + 20)  // Start after app icon
         let arrowEndX = CGFloat(applicationsIconX - iconSize / 2 - 20)  // End before Applications
-        let arrowY = CGFloat(height - appIconY)  // Flip Y coordinate for Core Graphics
+        let arrowY = CGFloat(height - mainIconY)  // Flip Y coordinate for Core Graphics
 
         // Arrow settings
         let arrowColor = NSColor(white: 0.4, alpha: 0.7)
@@ -364,7 +396,30 @@ actor DMGMaker {
 
     // MARK: - Finder Configuration via AppleScript
 
-    private func configureFinderView(volumeName: String, appName: String) async throws {
+    private func configureFinderView(
+        volumeName: String,
+        appName: String,
+        windowHeight: CGFloat,
+        mainIconY: Int,
+        extraFiles: [String]
+    ) async throws {
+        // Build position commands for extra files
+        var extraFilePositions = ""
+        if extraFiles.count == 1 {
+            // Single extra file - center it
+            extraFilePositions = """
+
+                set position of item "\(extraFiles[0])" of container window to {\(centerX), \(extraFileY)}
+            """
+        } else if extraFiles.count == 2 {
+            // Two extra files - spread horizontally
+            extraFilePositions = """
+
+                set position of item "\(extraFiles[0])" of container window to {\(appIconX), \(extraFileY)}
+                set position of item "\(extraFiles[1])" of container window to {\(applicationsIconX), \(extraFileY)}
+            """
+        }
+
         let script = """
         tell application "Finder"
             tell disk "\(volumeName)"
@@ -377,8 +432,8 @@ actor DMGMaker {
                 set arrangement of theViewOptions to not arranged
                 set icon size of theViewOptions to \(iconSize)
                 set background picture of theViewOptions to file ".background:background.png"
-                set position of item "\(appName)" of container window to {\(appIconX), \(appIconY)}
-                set position of item "Applications" of container window to {\(applicationsIconX), \(applicationsIconY)}
+                set position of item "\(appName)" of container window to {\(appIconX), \(mainIconY)}
+                set position of item "Applications" of container window to {\(applicationsIconX), \(mainIconY)}\(extraFilePositions)
                 close
                 open
                 close
