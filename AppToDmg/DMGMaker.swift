@@ -6,12 +6,15 @@
 //
 
 import Foundation
+import AppKit
 
 enum DMGError: LocalizedError {
     case invalidAppBundle
     case copyFailed(String)
     case symlinkFailed(String)
     case hdiutilFailed(exitCode: Int32, output: String)
+    case stylingFailed(String)
+    case backgroundGenerationFailed
 
     var errorDescription: String? {
         switch self {
@@ -23,11 +26,24 @@ enum DMGError: LocalizedError {
             return "Could not create the Applications shortcut. \(reason)"
         case .hdiutilFailed(let exitCode, let output):
             return "DMG creation failed (exit code \(exitCode)): \(output)"
+        case .stylingFailed(let reason):
+            return "DMG styling failed: \(reason)"
+        case .backgroundGenerationFailed:
+            return "Failed to generate background image."
         }
     }
 }
 
 actor DMGMaker {
+
+    // DMG window and icon layout constants
+    private let windowWidth: CGFloat = 540
+    private let windowHeight: CGFloat = 380
+    private let iconSize: Int = 128
+    private let appIconX: Int = 130
+    private let appIconY: Int = 190
+    private let applicationsIconX: Int = 410
+    private let applicationsIconY: Int = 190
 
     func createDMG(
         appURL: URL,
@@ -100,39 +116,268 @@ actor DMGMaker {
             try? fileManager.removeItem(at: outputURL)
         }
 
-        // Create DMG using hdiutil
-        await outputHandler("Creating DMG image...")
+        // Create DMG - use styled approach if Applications link is included
+        if includeApplicationsLink {
+            try await createStyledDMG(
+                stagingDir: stagingDir,
+                outputURL: outputURL,
+                volumeName: volumeName,
+                appName: appName,
+                outputHandler: outputHandler
+            )
+        } else {
+            // Simple DMG without styling
+            await outputHandler("Creating DMG image...")
 
-        let result = await runHdiutil(
-            stagingDir: stagingDir,
-            outputURL: outputURL,
-            volumeName: volumeName,
-            outputHandler: outputHandler
-        )
+            let result = await runHdiutil(arguments: [
+                "create",
+                "-volname", volumeName,
+                "-srcfolder", stagingDir.path,
+                "-ov",
+                "-format", "UDZO",
+                outputURL.path
+            ], outputHandler: outputHandler)
 
-        if result.exitCode != 0 {
-            throw DMGError.hdiutilFailed(exitCode: result.exitCode, output: result.output)
+            if result.exitCode != 0 {
+                throw DMGError.hdiutilFailed(exitCode: result.exitCode, output: result.output)
+            }
         }
 
         await outputHandler("DMG created successfully!")
     }
 
-    private func runHdiutil(
+    // MARK: - Styled DMG Creation
+
+    private func createStyledDMG(
         stagingDir: URL,
         outputURL: URL,
         volumeName: String,
+        appName: String,
         outputHandler: @escaping @MainActor (String) -> Void
-    ) async -> (exitCode: Int32, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = [
+    ) async throws {
+        let fileManager = FileManager.default
+        let tempDMGURL = fileManager.temporaryDirectory
+            .appendingPathComponent("AppToDmg-temp-\(UUID().uuidString).dmg")
+
+        defer {
+            try? fileManager.removeItem(at: tempDMGURL)
+        }
+
+        // Step 1: Create read-write DMG
+        await outputHandler("Creating read-write DMG...")
+
+        var result = await runHdiutil(arguments: [
             "create",
             "-volname", volumeName,
             "-srcfolder", stagingDir.path,
             "-ov",
+            "-format", "UDRW",
+            tempDMGURL.path
+        ], outputHandler: outputHandler)
+
+        if result.exitCode != 0 {
+            throw DMGError.hdiutilFailed(exitCode: result.exitCode, output: result.output)
+        }
+
+        // Step 2: Mount the DMG
+        await outputHandler("Mounting DMG for styling...")
+
+        let mountPoint = "/Volumes/\(volumeName)"
+
+        result = await runHdiutil(arguments: [
+            "attach",
+            tempDMGURL.path,
+            "-mountpoint", mountPoint,
+            "-nobrowse"
+        ], outputHandler: outputHandler)
+
+        if result.exitCode != 0 {
+            throw DMGError.hdiutilFailed(exitCode: result.exitCode, output: result.output)
+        }
+
+        // Ensure we detach on exit
+        defer {
+            Task {
+                _ = await runHdiutil(arguments: ["detach", mountPoint, "-force"], outputHandler: { _ in })
+            }
+        }
+
+        // Step 3: Generate and copy background image
+        await outputHandler("Generating background image...")
+
+        guard let backgroundURL = generateBackgroundImage() else {
+            throw DMGError.backgroundGenerationFailed
+        }
+
+        defer {
+            try? fileManager.removeItem(at: backgroundURL)
+        }
+
+        // Create .background directory and copy image
+        let backgroundDir = URL(fileURLWithPath: mountPoint).appendingPathComponent(".background")
+        do {
+            try fileManager.createDirectory(at: backgroundDir, withIntermediateDirectories: true)
+            try fileManager.copyItem(at: backgroundURL, to: backgroundDir.appendingPathComponent("background.png"))
+        } catch {
+            throw DMGError.stylingFailed("Could not copy background: \(error.localizedDescription)")
+        }
+
+        // Step 4: Run AppleScript to configure Finder view
+        await outputHandler("Configuring DMG appearance...")
+
+        try await configureFinderView(volumeName: volumeName, appName: appName)
+
+        // Small delay to let Finder write .DS_Store
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        // Step 5: Detach the DMG
+        await outputHandler("Finalizing DMG...")
+
+        result = await runHdiutil(arguments: [
+            "detach", mountPoint
+        ], outputHandler: outputHandler)
+
+        if result.exitCode != 0 {
+            // Try force detach
+            _ = await runHdiutil(arguments: ["detach", mountPoint, "-force"], outputHandler: { _ in })
+        }
+
+        // Step 6: Convert to compressed read-only DMG
+        await outputHandler("Compressing DMG...")
+
+        result = await runHdiutil(arguments: [
+            "convert",
+            tempDMGURL.path,
             "-format", "UDZO",
-            outputURL.path
-        ]
+            "-o", outputURL.path
+        ], outputHandler: outputHandler)
+
+        if result.exitCode != 0 {
+            throw DMGError.hdiutilFailed(exitCode: result.exitCode, output: result.output)
+        }
+    }
+
+    // MARK: - Background Image Generation
+
+    private func generateBackgroundImage() -> URL? {
+        let width = Int(windowWidth)
+        let height = Int(windowHeight)
+
+        let image = NSImage(size: NSSize(width: width, height: height))
+
+        image.lockFocus()
+
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            image.unlockFocus()
+            return nil
+        }
+
+        // Fill with light gray background
+        context.setFillColor(NSColor(white: 0.95, alpha: 1.0).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Draw arrow from app icon to Applications folder
+        // Icons are positioned at their center points
+        let arrowStartX = CGFloat(appIconX + iconSize / 2 + 20)  // Start after app icon
+        let arrowEndX = CGFloat(applicationsIconX - iconSize / 2 - 20)  // End before Applications
+        let arrowY = CGFloat(height - appIconY)  // Flip Y coordinate for Core Graphics
+
+        // Arrow settings
+        let arrowColor = NSColor(white: 0.4, alpha: 0.7)
+        context.setStrokeColor(arrowColor.cgColor)
+        context.setFillColor(arrowColor.cgColor)
+        context.setLineWidth(3.0)
+        context.setLineCap(.round)
+
+        // Draw arrow line
+        context.move(to: CGPoint(x: arrowStartX, y: arrowY))
+        context.addLine(to: CGPoint(x: arrowEndX - 15, y: arrowY))
+        context.strokePath()
+
+        // Draw arrow head
+        let arrowHeadSize: CGFloat = 15
+        context.move(to: CGPoint(x: arrowEndX, y: arrowY))
+        context.addLine(to: CGPoint(x: arrowEndX - arrowHeadSize, y: arrowY + arrowHeadSize * 0.6))
+        context.addLine(to: CGPoint(x: arrowEndX - arrowHeadSize, y: arrowY - arrowHeadSize * 0.6))
+        context.closePath()
+        context.fillPath()
+
+        image.unlockFocus()
+
+        // Save to temp file
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dmg-background-\(UUID().uuidString).png")
+
+        do {
+            try pngData.write(to: tempURL)
+            return tempURL
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Finder Configuration via AppleScript
+
+    private func configureFinderView(volumeName: String, appName: String) async throws {
+        let script = """
+        tell application "Finder"
+            tell disk "\(volumeName)"
+                open
+                set current view of container window to icon view
+                set toolbar visible of container window to false
+                set statusbar visible of container window to false
+                set bounds of container window to {100, 100, \(100 + Int(windowWidth)), \(100 + Int(windowHeight))}
+                set theViewOptions to icon view options of container window
+                set arrangement of theViewOptions to not arranged
+                set icon size of theViewOptions to \(iconSize)
+                set background picture of theViewOptions to file ".background:background.png"
+                set position of item "\(appName)" of container window to {\(appIconX), \(appIconY)}
+                set position of item "Applications" of container window to {\(applicationsIconX), \(applicationsIconY)}
+                close
+                open
+                close
+            end tell
+        end tell
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        process.standardOutput = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            throw DMGError.stylingFailed("Failed to run AppleScript: \(error.localizedDescription)")
+        }
+
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw DMGError.stylingFailed("AppleScript failed: \(errorStr)")
+        }
+    }
+
+    // MARK: - hdiutil Helper
+
+    private func runHdiutil(
+        arguments: [String],
+        outputHandler: @escaping @MainActor (String) -> Void
+    ) async -> (exitCode: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = arguments
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
