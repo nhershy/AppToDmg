@@ -12,8 +12,8 @@ struct AppToDmgApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 450, minHeight: 400)
+                .frame(width: 380, height: 520)
         }
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
     }
 }

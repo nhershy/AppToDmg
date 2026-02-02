@@ -12,146 +12,145 @@ struct ContentView: View {
     @State private var selectedAppURL: URL?
     @State private var includeApplicationsLink = true
     @State private var isRunning = false
-    @State private var logOutput: [String] = []
     @State private var errorMessage: String?
-    @State private var successMessage: String?
+    @State private var isComplete = false
     @State private var isTargeted = false
 
     private let dmgMaker = DMGMaker()
 
     var body: some View {
-        VStack(spacing: 16) {
-            // Input App Section
-            GroupBox("Input App") {
-                VStack(spacing: 12) {
-                    if let appURL = selectedAppURL {
-                        HStack(spacing: 12) {
-                            AppIconView(appURL: appURL)
-                                .frame(width: 48, height: 48)
+        VStack(spacing: 20) {
+            // Drop zone or selected app
+            dropZone
+                .animation(.easeInOut(duration: 0.2), value: selectedAppURL != nil)
+                .animation(.easeInOut(duration: 0.2), value: isTargeted)
 
-                            VStack(alignment: .leading) {
-                                Text(appURL.deletingPathExtension().lastPathComponent)
-                                    .font(.headline)
-                                Text(appURL.path)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-
-                            Spacer()
-
-                            Button("Clear") {
-                                selectedAppURL = nil
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                        .padding(8)
-                    } else {
-                        dropZone
-                    }
-                }
-            }
-
-            // Output Section
-            GroupBox("Options") {
+            // Options toggle (subtle styling)
+            if !isComplete {
                 Toggle("Include Applications folder shortcut", isOn: $includeApplicationsLink)
-                    .padding(.vertical, 4)
+                    .toggleStyle(.switch)
+                    .disabled(isRunning)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
             }
 
-            // Action Button
-            Button(action: createDMG) {
-                HStack {
-                    if isRunning {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(.trailing, 4)
+            // Create DMG button or success state
+            if isComplete {
+                successView
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            } else {
+                Button(action: createDMG) {
+                    HStack(spacing: 8) {
+                        if isRunning {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isRunning ? "Creating DMG..." : "Create DMG")
+                            .font(.headline)
                     }
-                    Text(isRunning ? "Creating DMG..." : "Create DMG")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(selectedAppURL == nil || isRunning)
+                .padding(.horizontal, 8)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(selectedAppURL == nil || isRunning)
 
-            // Status Section
-            if !logOutput.isEmpty || errorMessage != nil || successMessage != nil {
-                GroupBox("Status") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if let error = errorMessage {
-                            Label(error, systemImage: "xmark.circle.fill")
-                                .foregroundStyle(.red)
-                        }
-
-                        if let success = successMessage {
-                            Label(success, systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        }
-
-                        if !logOutput.isEmpty {
-                            ScrollViewReader { proxy in
-                                ScrollView {
-                                    LazyVStack(alignment: .leading, spacing: 2) {
-                                        ForEach(Array(logOutput.enumerated()), id: \.offset) { index, line in
-                                            Text(line)
-                                                .font(.system(.caption, design: .monospaced))
-                                                .foregroundStyle(.secondary)
-                                                .id(index)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .frame(maxHeight: 120)
-                                .onChange(of: logOutput.count) { _, newCount in
-                                    if newCount > 0 {
-                                        proxy.scrollTo(newCount - 1, anchor: .bottom)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            // Error message
+            if let error = errorMessage {
+                Label(error, systemImage: "xmark.circle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+                    .transition(.opacity)
             }
 
             Spacer()
         }
-        .padding()
-        .navigationTitle("App to DMG")
+        .padding(24)
+        .animation(.easeInOut(duration: 0.25), value: isComplete)
+        .animation(.easeInOut(duration: 0.2), value: errorMessage != nil)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             handleDrop(providers: providers)
         }
     }
 
     private var dropZone: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "arrow.down.app")
-                .font(.system(size: 32))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 16) {
+            Spacer()
 
-            Text("Drop .app here or click to browse")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            if let appURL = selectedAppURL {
+                // Selected app display
+                AppIconView(appURL: appURL)
+                    .frame(width: 80, height: 80)
 
-            Button("Choose App...") {
-                chooseApp()
+                Text(appURL.deletingPathExtension().lastPathComponent)
+                    .font(.title2)
+                    .fontWeight(.medium)
+
+                Button("Change App") {
+                    chooseApp()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+                .font(.subheadline)
+            } else {
+                // Empty drop zone
+                Image(systemName: "arrow.down.app")
+                    .font(.system(size: 56))
+                    .foregroundStyle(.blue.opacity(0.6))
+
+                Text("Drop .app here")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+
+                Button(action: chooseApp) {
+                    Text("Choose App...")
+                        .font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .background(Color.blue)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.bordered)
+
+            Spacer()
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 120)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(
-                    isTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
+                    Color.blue.opacity(isTargeted ? 0.8 : 0.3),
                     style: StrokeStyle(lineWidth: 2, dash: [8])
                 )
         )
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isTargeted ? Color.accentColor.opacity(0.1) : Color.clear)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.blue.opacity(isTargeted ? 0.08 : 0.04))
         )
+    }
+
+    private var successView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.green)
+
+            Text("DMG Created!")
+                .font(.title2)
+                .fontWeight(.medium)
+
+            Button("Create Another") {
+                resetForNewDMG()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+        }
+        .padding(.vertical, 8)
     }
 
     private func chooseApp() {
@@ -188,8 +187,13 @@ struct ContentView: View {
 
     private func clearStatus() {
         errorMessage = nil
-        successMessage = nil
-        logOutput.removeAll()
+        isComplete = false
+    }
+
+    private func resetForNewDMG() {
+        selectedAppURL = nil
+        errorMessage = nil
+        isComplete = false
     }
 
     private func createDMG() {
@@ -209,7 +213,7 @@ struct ContentView: View {
 
         // Start creation
         isRunning = true
-        clearStatus()
+        errorMessage = nil
 
         Task {
             do {
@@ -218,11 +222,12 @@ struct ContentView: View {
                     outputURL: outputURL,
                     volumeName: appName,
                     includeApplicationsLink: includeApplicationsLink
-                ) { message in
-                    logOutput.append(message)
+                ) { _ in
+                    // Silently ignore log messages for cleaner UI
                 }
 
-                successMessage = "DMG created at \(outputURL.lastPathComponent)"
+                isComplete = true
+                SoundPlayer.playSuccessJingle()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -242,7 +247,7 @@ struct AppIconView: View {
                 .aspectRatio(contentMode: .fit)
         } else {
             Image(systemName: "app.fill")
-                .font(.system(size: 32))
+                .font(.system(size: 48))
                 .foregroundStyle(.secondary)
         }
     }
